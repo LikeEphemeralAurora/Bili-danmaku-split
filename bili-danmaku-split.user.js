@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         B站弹幕长句发送（隐形快速版）
-// @namespace    https://github.com/LikeEphemeralAurora/bili-danmaku-split
-// @version      7.3.0
+// @namespace    https://github.com/local/bili-danmaku-split-v6
+// @version      7.4.0
 // @description  在 B 站直播间输入框里直接写长句：超过 20 字自动按标点切分并快速并发发送；面板默认隐形，只在右下角留一个小按钮。
 // @author       local
 // @match        https://live.bilibili.com/*
@@ -284,6 +284,25 @@
     return out
   }
 
+  let settingValue = false
+  /** 用原生 setter 写值并派发 input，让站点自己的状态（Vue 模型）跟着变，
+   *  否则我们清空 DOM 后站点会把它"渲染回来"（表现为发完还留在框里） */
+  function setSiteValue(v) {
+    if (!ta) return
+    const proto = ta instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+    const desc = Object.getOwnPropertyDescriptor(proto, 'value')
+    settingValue = true
+    try {
+      if (desc && desc.set) desc.set.call(ta, v)
+      else ta.value = v
+      ta.dispatchEvent(new Event('input', { bubbles: true }))
+    } catch {
+      try { ta.value = v } catch {}
+    } finally {
+      settingValue = false
+    }
+  }
+
   let baseBoxH = 0
   function applyBoxHeight() {
     if (!ta) return
@@ -301,7 +320,7 @@
     if (!ta) return
     const m = mirrorPrefix()
     if (ta.value !== m) {
-      ta.value = m
+      setSiteValue(m)
       try { ta.setSelectionRange(m.length, m.length) } catch {}
     }
     applyBoxHeight()
@@ -359,7 +378,7 @@
         e.stopImmediatePropagation()
         buffer = ''
         truncWarned = false
-        if (ta) ta.value = ''
+        setSiteValue('')
         syncUI()
         enqueueSend(text)
         try { el2.focus() } catch {}
@@ -372,7 +391,7 @@
       if (e.key && e.key.length === 1) {
         e.preventDefault(); e.stopImmediatePropagation(); insertText(e.key)
       }
-      if (e.key === 'Escape') { buffer = ''; truncWarned = false; if (ta) ta.value = ''; syncUI() }
+      if (e.key === 'Escape') { buffer = ''; truncWarned = false; setSiteValue(''); syncUI() }
     }, true)
 
     el2.addEventListener('paste', (e) => {
@@ -384,7 +403,7 @@
 
     // 站点想改框内容：一律以 buffer 的镜像为准
     el2.addEventListener('input', () => {
-      if (composing) return
+      if (composing || settingValue) return
       const m = mirrorPrefix()
       if (el2.value !== m) {
         el2.value = m
