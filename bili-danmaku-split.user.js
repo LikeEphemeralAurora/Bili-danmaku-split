@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         B站弹幕长句发送（隐形快速版）
 // @namespace    https://github.com/local/bili-danmaku-split-v6
-// @version      8.0.1
+// @version      8.0.2
 // @description  在 B 站直播间输入框里直接写长句：超过 20 字自动按标点切分并快速并发发送；面板默认隐形，只在右下角留一个小按钮。
 // @author       local
 // @match        https://live.bilibili.com/*
@@ -349,21 +349,8 @@
     el2.dataset.bds6c = '1'
     ta = el2
 
-    el2.addEventListener('keydown', (e) => {
-      if (e.isComposing || e.keyCode === 229) return
-      if (e.metaKey || e.ctrlKey || e.altKey) return
-      if (e.key === 'Enter' && !e.shiftKey) {
-        const text = (el2.value || '').trim()
-        if (!text) return
-        e.preventDefault(); e.stopImmediatePropagation()
-        setSiteValue('')
-        enqueueSend(text)
-        try { el2.focus() } catch (_) {}
-        return
-      }
-      if (e.key === 'Escape') { setSiteValue(''); buffer = ''; caretPos = 0; syncUI() }
-    }, true)
-
+    /* 兼容模式不插手 Enter：让 B 站自己发（这样永远不会"回车发不出去"）。
+       长句请用面板里的「写作框」，那里有自己的发送按钮。 */
     el2.addEventListener('input', () => { buffer = el2.value || ''; caretPos = buffer.length; syncUI() })
     syncUI()
   }
