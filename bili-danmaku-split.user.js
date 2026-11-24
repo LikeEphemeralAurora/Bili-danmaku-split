@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         B站弹幕长句发送（隐形快速版）
 // @namespace    https://github.com/local/bili-danmaku-split-v6
-// @version      7.4.0
+// @version      7.5.1
 // @description  在 B 站直播间输入框里直接写长句：超过 20 字自动按标点切分并快速并发发送；面板默认隐形，只在右下角留一个小按钮。
 // @author       local
 // @match        https://live.bilibili.com/*
@@ -267,7 +267,10 @@
 
   /* ── 影子编辑：全量文本存在 buffer，B 站框只做「镜像显示」 ── */
   let buffer = ''
+  let caretPos = 0          // 光标在 buffer 里的位置（不依赖 DOM，因为镜像可能被截断）
   let truncWarned = false
+  const PAIRS = { '“': '”', '‘': '’', '（': '）', '【': '】', '《': '》', '「': '」', '『': '』', '(': ')', '[': ']', '{': '}', '"': '"', "'": "'" }
+  const CLOSE_TO_OPEN = { '”': '“', '’': '‘', '）': '（', '】': '【', '》': '《', '」': '「', '』': '『', ')': '(', ']': '[', '}': '{' }
   const charW = (ch) => (/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/.test(ch) ? 2 : 1)
   const mirrorLimit = () => Math.max(20, Math.min(400, Number(cfg.mirrorWidth) || 80))
 
@@ -284,81 +287,74 @@
     return out
   }
 
-  let settingValue = false
-  /** 用原生 setter 写值并派发 input，让站点自己的状态（Vue 模型）跟着变，
-   *  否则我们清空 DOM 后站点会把它"渲染回来"（表现为发完还留在框里） */
-  function setSiteValue(v) {
-    if (!ta) return
-    const proto = ta instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
-    const desc = Object.getOwnPropertyDescriptor(proto, 'value')
-    settingValue = true
-    try {
-      if (desc && desc.set) desc.set.call(ta, v)
-      else ta.value = v
-      ta.dispatchEvent(new Event('input', { bubbles: true }))
-    } catch {
-      try { ta.value = v } catch {}
-    } finally {
-      settingValue = false
-    }
-  }
-
-  let baseBoxH = 0
-  function applyBoxHeight() {
-    if (!ta) return
-    try {
-      if (!baseBoxH) baseBoxH = ta.clientHeight || 0
-      const extra = Number(cfg.boxExtra) || 0
-      if (!extra) { ta.style.height = ''; ta.style.maxHeight = ''; return }
-      ta.style.height = (baseBoxH + extra) + 'px'
-      ta.style.maxHeight = (baseBoxH + extra) + 'px'
-    } catch {}
-  }
-  window.__bds6BoxHeight = applyBoxHeight
-
   function renderMirror() {
     if (!ta) return
     const m = mirrorPrefix()
-    if (ta.value !== m) {
-      setSiteValue(m)
-      try { ta.setSelectionRange(m.length, m.length) } catch {}
-    }
-    applyBoxHeight()
-    try { ta.scrollTop = ta.scrollHeight; ta.scrollLeft = 0 } catch {}
-    if (buffer.length > m.length && !truncWarned) {
+    if (ta.value !== m) setSiteValue(m)
+    const p = Math.max(0, Math.min(caretPos, m.length))
+    try { ta.setSelectionRange(p, p) } catch {}
+    if (buffer.length > m.length && caretPos > m.length && !truncWarned) {
       truncWarned = true
       toast('已超过输入框显示上限，后面的字仍在后台保留（回车照样发）', 2600)
     }
+    applyBoxHeight()
+    try { ta.scrollTop = ta.scrollHeight; ta.scrollLeft = 0 } catch {}
     syncUI()
   }
 
-  const caret = () => (ta && ta.selectionStart != null ? ta.selectionStart : buffer.length)
+  const caret = () => Math.max(0, Math.min(caretPos, buffer.length))
+
+  /** 输入法一次提交“”或（）这类成对符号时，把光标放到中间，否则会变成“”文本 */
+  function pairOffset(str) {
+    if (str.length === 2 && PAIRS[str[0]] === str[1]) return 1
+    return -1
+  }
 
   const insertText = (str) => {
     const pos = caret()
+    // 右括号/右引号：如果光标后面已经有一个同样的字符（输入法自动配对留下的），
+    // 不要重复插入，直接把光标移过去，否则会出现 “”文本
+    if (str.length === 1 && CLOSE_TO_OPEN[str] && buffer[pos] === str) {
+      caretPos = pos + 1
+      renderMirror()
+      return
+    }
     let v = buffer.slice(0, pos) + str + buffer.slice(pos)
     const max = Number(cfg.typeLimit) || 200
     if (v.length > max) v = v.slice(0, max)
     buffer = v
+    const mid = pairOffset(str)
+    caretPos = mid >= 0 ? Math.min(pos + mid, buffer.length) : Math.min(pos + str.length, buffer.length)
     renderMirror()
   }
 
   const deleteSel = (back) => {
-    const a = caret()
-    const b = ta && ta.selectionEnd != null ? ta.selectionEnd : a
-    if (a !== b) buffer = buffer.slice(0, a) + buffer.slice(b)
-    else if (back && a > 0) buffer = buffer.slice(0, a - 1) + buffer.slice(a)
-    else if (!back && a < buffer.length) buffer = buffer.slice(0, a) + buffer.slice(a + 1)
+    const pos = caret()
+    if (back && pos > 0) {
+      buffer = buffer.slice(0, pos - 1) + buffer.slice(pos)
+      caretPos = pos - 1
+    } else if (!back && pos < buffer.length) {
+      buffer = buffer.slice(0, pos) + buffer.slice(pos + 1)
+      caretPos = pos
+    }
     renderMirror()
   }
+
+  const moveCaret = (to) => { caretPos = Math.max(0, Math.min(to, buffer.length)); renderMirror() }
 
   const bindInput = (el2) => {
     if (!el2 || el2 === ta) return
     ta = el2
     if (!buffer && el2.value) buffer = el2.value
+    caretPos = buffer.length
     el2.dataset.bds6 = '1'
 
-    el2.addEventListener('click', () => { ta = el2; syncUI() }, true)
+    el2.addEventListener('click', () => {
+      ta = el2
+      const p = el2.selectionStart == null ? buffer.length : el2.selectionStart
+      caretPos = Math.min(p, buffer.length)
+      syncUI()
+    }, true)
 
     el2.addEventListener('compositionstart', () => { composing = true }, true)
     el2.addEventListener('compositionend', (e) => {
@@ -377,6 +373,7 @@
         e.preventDefault()
         e.stopImmediatePropagation()
         buffer = ''
+        caretPos = 0
         truncWarned = false
         setSiteValue('')
         syncUI()
@@ -387,11 +384,14 @@
       if (e.key === 'Backspace' || e.key === 'Delete') {
         e.preventDefault(); e.stopImmediatePropagation(); deleteSel(e.key === 'Backspace'); return
       }
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') return
+      if (e.key === 'ArrowLeft') { e.preventDefault(); e.stopImmediatePropagation(); moveCaret(caret() - 1); return }
+      if (e.key === 'ArrowRight') { e.preventDefault(); e.stopImmediatePropagation(); moveCaret(caret() + 1); return }
+      if (e.key === 'Home') { e.preventDefault(); e.stopImmediatePropagation(); moveCaret(0); return }
+      if (e.key === 'End') { e.preventDefault(); e.stopImmediatePropagation(); moveCaret(buffer.length); return }
+      if (e.key === 'Escape') { buffer = ''; caretPos = 0; truncWarned = false; setSiteValue(''); syncUI(); return }
       if (e.key && e.key.length === 1) {
         e.preventDefault(); e.stopImmediatePropagation(); insertText(e.key)
       }
-      if (e.key === 'Escape') { buffer = ''; truncWarned = false; setSiteValue(''); syncUI() }
     }, true)
 
     el2.addEventListener('paste', (e) => {
@@ -406,8 +406,8 @@
       if (composing || settingValue) return
       const m = mirrorPrefix()
       if (el2.value !== m) {
-        el2.value = m
-        try { el2.setSelectionRange(m.length, m.length) } catch {}
+        setSiteValue(m)
+        try { el2.setSelectionRange(Math.min(caretPos, m.length), Math.min(caretPos, m.length)) } catch {}
       }
       syncUI()
     })
