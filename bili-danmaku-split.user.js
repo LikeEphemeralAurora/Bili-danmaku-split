@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         B站弹幕长句发送（隐形快速版）
 // @namespace    https://github.com/local/bili-danmaku-split-v6
-// @version      7.5.1
+// @version      7.6.0
 // @description  在 B 站直播间输入框里直接写长句：超过 20 字自动按标点切分并快速并发发送；面板默认隐形，只在右下角留一个小按钮。
 // @author       local
 // @match        https://live.bilibili.com/*
@@ -363,6 +363,34 @@
       if (t) insertText(t)
     }, true)
 
+    /* 用 beforeinput 接管编辑：空格、符号、退格、删除都能覆盖，且不打断输入法 */
+    el2.addEventListener('beforeinput', (e) => {
+      if (settingValue) return
+      if (e.isComposing || composing) return
+      const t = e.inputType || ''
+
+      if (t === 'insertText' && typeof e.data === 'string' && e.data) {
+        e.preventDefault()
+        insertText(e.data)
+        return
+      }
+      if (t === 'insertLineBreak' || t === 'insertParagraph') {
+        e.preventDefault()
+        const text = buffer.trim()
+        if (!text) return
+        buffer = ''
+        caretPos = 0
+        truncWarned = false
+        setSiteValue('')
+        syncUI()
+        enqueueSend(text)
+        return
+      }
+      if (t === 'deleteContentBackward') { e.preventDefault(); deleteSel(true); return }
+      if (t === 'deleteContentForward') { e.preventDefault(); deleteSel(false); return }
+      if (t === 'deleteByCut') { e.preventDefault(); return }
+    }, true)
+
     el2.addEventListener('keydown', (e) => {
       if (e.isComposing || composing || e.keyCode === 229) return
       if (e.metaKey || e.ctrlKey || e.altKey) return
@@ -381,17 +409,11 @@
         try { el2.focus() } catch {}
         return
       }
-      if (e.key === 'Backspace' || e.key === 'Delete') {
-        e.preventDefault(); e.stopImmediatePropagation(); deleteSel(e.key === 'Backspace'); return
-      }
       if (e.key === 'ArrowLeft') { e.preventDefault(); e.stopImmediatePropagation(); moveCaret(caret() - 1); return }
       if (e.key === 'ArrowRight') { e.preventDefault(); e.stopImmediatePropagation(); moveCaret(caret() + 1); return }
       if (e.key === 'Home') { e.preventDefault(); e.stopImmediatePropagation(); moveCaret(0); return }
       if (e.key === 'End') { e.preventDefault(); e.stopImmediatePropagation(); moveCaret(buffer.length); return }
-      if (e.key === 'Escape') { buffer = ''; caretPos = 0; truncWarned = false; setSiteValue(''); syncUI(); return }
-      if (e.key && e.key.length === 1) {
-        e.preventDefault(); e.stopImmediatePropagation(); insertText(e.key)
-      }
+      if (e.key === 'Escape') { buffer = ''; caretPos = 0; truncWarned = false; setSiteValue(''); syncUI() }
     }, true)
 
     el2.addEventListener('paste', (e) => {
@@ -401,13 +423,14 @@
       insertText(t.replace(/\r/g, ''))
     }, true)
 
-    // 站点想改框内容：一律以 buffer 的镜像为准
+    /* 兜底：站点自己改了内容（自动配对、截断、清空）时，以站点为准同步缓冲 */
     el2.addEventListener('input', () => {
       if (composing || settingValue) return
+      const v = el2.value == null ? '' : el2.value
       const m = mirrorPrefix()
-      if (el2.value !== m) {
-        setSiteValue(m)
-        try { el2.setSelectionRange(Math.min(caretPos, m.length), Math.min(caretPos, m.length)) } catch {}
+      if (v !== m) {
+        buffer = v
+        caretPos = el2.selectionStart == null ? buffer.length : Math.min(el2.selectionStart, buffer.length)
       }
       syncUI()
     })
