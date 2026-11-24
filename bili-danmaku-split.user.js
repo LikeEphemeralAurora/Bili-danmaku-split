@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         B站弹幕长句发送（隐形快速版）
 // @namespace    https://github.com/local/bili-danmaku-split-v6
-// @version      8.0.0
+// @version      8.0.1
 // @description  在 B 站直播间输入框里直接写长句：超过 20 字自动按标点切分并快速并发发送；面板默认隐形，只在右下角留一个小按钮。
 // @author       local
 // @match        https://live.bilibili.com/*
@@ -362,18 +362,6 @@
         return
       }
       if (e.key === 'Escape') { setSiteValue(''); buffer = ''; caretPos = 0; syncUI() }
-    }, true)
-
-    /* 粘贴长句：直接分条发，不塞进 20 字框 */
-    el2.addEventListener('paste', (e) => {
-      const raw = (e.clipboardData || window.clipboardData)
-      const t = raw ? raw.getData('text') : ''
-      if (!t) return
-      const flat = t.replace(/\r/g, '')
-      if (flat.length > (cfg.limit || 20)) {
-        e.preventDefault(); e.stopImmediatePropagation()
-        enqueueSend(flat)
-      }
     }, true)
 
     el2.addEventListener('input', () => { buffer = el2.value || ''; caretPos = buffer.length; syncUI() })
