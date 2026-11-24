@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         B站弹幕长句发送（隐形快速版）
 // @namespace    https://github.com/local/bili-danmaku-split-v6
-// @version      7.6.0
+// @version      8.0.0
 // @description  在 B 站直播间输入框里直接写长句：超过 20 字自动按标点切分并快速并发发送；面板默认隐形，只在右下角留一个小按钮。
 // @author       local
 // @match        https://live.bilibili.com/*
@@ -22,6 +22,7 @@
     typeLimit: 200,   // 后台缓冲允许的字数
     mirrorWidth: 80,  // 镜像到 B 站框的显示宽度（中文算 2）
     boxExtra: 0,      // 输入框额外加高（px，0=不改 B 站原样）
+    mode: 'compat',   // compat=原样输入(≤20字，最稳) / shadow=接管输入框(可写长句)
   }
   let cfg = { ...DEFAULTS }
   try { cfg = { ...DEFAULTS, ...(JSON.parse(localStorage.getItem(CFG_KEY) || '{}') || {}) } } catch {}
@@ -342,6 +343,43 @@
 
   const moveCaret = (to) => { caretPos = Math.max(0, Math.min(to, buffer.length)); renderMirror() }
 
+  /* ───────── 兼容模式：完全不拦输入，只用回车发送、长粘贴自动分条 ───────── */
+  const bindCompat = (el2) => {
+    if (!el2 || el2.dataset.bds6c === '1') return
+    el2.dataset.bds6c = '1'
+    ta = el2
+
+    el2.addEventListener('keydown', (e) => {
+      if (e.isComposing || e.keyCode === 229) return
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (e.key === 'Enter' && !e.shiftKey) {
+        const text = (el2.value || '').trim()
+        if (!text) return
+        e.preventDefault(); e.stopImmediatePropagation()
+        setSiteValue('')
+        enqueueSend(text)
+        try { el2.focus() } catch (_) {}
+        return
+      }
+      if (e.key === 'Escape') { setSiteValue(''); buffer = ''; caretPos = 0; syncUI() }
+    }, true)
+
+    /* 粘贴长句：直接分条发，不塞进 20 字框 */
+    el2.addEventListener('paste', (e) => {
+      const raw = (e.clipboardData || window.clipboardData)
+      const t = raw ? raw.getData('text') : ''
+      if (!t) return
+      const flat = t.replace(/\r/g, '')
+      if (flat.length > (cfg.limit || 20)) {
+        e.preventDefault(); e.stopImmediatePropagation()
+        enqueueSend(flat)
+      }
+    }, true)
+
+    el2.addEventListener('input', () => { buffer = el2.value || ''; caretPos = buffer.length; syncUI() })
+    syncUI()
+  }
+
   const bindInput = (el2) => {
     if (!el2 || el2 === ta) return
     ta = el2
@@ -494,11 +532,14 @@
       <div class="row"><span>输入上限</span><input id="bds6-type" type="number" min="20" max="1000" step="10"></div>
       <div class="row"><span>输入框加高(px，0=不改)</span><input id="bds6-boxh" type="number" min="0" max="120" step="8"></div>
       <div class="row"><span>被限速自动补发</span><input id="bds6-retry" type="checkbox"></div>
+      <div class="row"><span>输入模式</span><select id="bds6-mode"><option value="compat">兼容（最稳）</option><option value="shadow">接管（可写长句）</option></select></div>
+      <div class="row" style="margin-top:10px"><span>写作框（长句）</span><button id="bds6-sendc" class="mini">发送</button></div>
+      <textarea id="bds6-compose" spellcheck="false" placeholder="在这里写长句，Ctrl+Enter 或点「发送」"></textarea>
       <div class="row" style="margin-top:10px"><span>屏蔽词（逗号分隔）</span></div>
       <textarea id="bds6-block" spellcheck="false"></textarea>
       <div class="row" style="margin-top:8px"><span>最近被吞 <b id="bds6-eatn">0</b> 条</span><button id="bds6-cleareat" class="mini">清空</button></div>
       <div id="bds6-eatlist" style="max-height:210px;overflow:auto;margin-top:6px;border:1px solid #33333a;border-radius:6px;padding:2px 4px;font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-all"></div>
-      <div class="hint">直接点 B 站输入框打字即可，超过「每条上限」会按标点自动切分并发发送。回车发送。</div>
+      <div class="hint">兼容模式：就在 B 站框里打字（最多 20 字），回车即发；长句请用上面的「写作框」。切到「接管」可让框里直接写长句（依赖输入法，可能不稳）。</div>
     `
     document.body.appendChild(panel)
     panelInfo = panel.querySelector('#bds6-info')
@@ -515,6 +556,23 @@
     g.onchange = () => { cfg.gapMs = Math.max(0, Math.min(2000, Number(g.value) || 0)); saveCfg() }
     t.onchange = () => { cfg.typeLimit = Math.max(20, Math.min(1000, Number(t.value) || 200)); saveCfg() }
     r.onchange = () => { cfg.retry = !!r.checked; saveCfg() }
+
+    const md = q('bds6-mode')
+    if (md) {
+      md.value = cfg.mode === 'shadow' ? 'shadow' : 'compat'
+      md.onchange = () => { cfg.mode = md.value === 'shadow' ? 'shadow' : 'compat'; saveCfg(); location.reload() }
+    }
+    const cp = q('bds6-compose')
+    const sendC = () => {
+      const v = cp ? cp.value.trim() : ''
+      if (!v) return
+      enqueueSend(v)
+      if (cp) cp.value = ''
+    }
+    const sc = q('bds6-sendc'); if (sc) sc.onclick = sendC
+    if (cp) cp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendC() }
+    })
 
     const blk = panel.querySelector('#bds6-block')
     if (blk) {
@@ -557,7 +615,7 @@
     buildUI()
     const attach = () => {
       const el2 = findInput()
-      if (el2) bindInput(el2)
+      if (el2) { if (cfg.mode === 'shadow') bindInput(el2); else bindCompat(el2) }
     }
     attach()
     // 直播间是 SPA：房间切换/重渲染时重新绑定（防抖，避免自触发死循环）
